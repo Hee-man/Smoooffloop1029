@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Xtream Browser (Private)</title>
+<style>
+  :root { --bg:#0b0f14; --card:#121722; --muted:#9aa4b2; --text:#e8ecf1; --acc:#4ea1ff; --line:#1f2533; }
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica,Arial,sans-serif}
+  header{padding:14px 16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#141b27,#0e1420);position:sticky;top:0;z-index:5}
+  h1{font-size:18px;margin:0 0 8px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .in{background:#0c111a;border:1px solid #2a3142;border-radius:12px;color:var(--text);padding:10px 12px;outline:none}
+  .in:focus{border-color:var(--acc)}
+  input.in{min-width:220px}
+  .btn{background:#162338;border:1px solid #2a3142;border-radius:12px;color:var(--text);padding:10px 12px;cursor:pointer}
+  .btn:hover{border-color:var(--acc)}
+  .tabs{display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line);overflow:auto}
+  .tab{padding:8px 12px;border-radius:999px;cursor:pointer;border:1px solid #2a3142;color:var(--muted);white-space:nowrap}
+  .tab.active{color:#fff;border-color:var(--acc);background:#122036}
+  .wrap{display:flex;gap:16px;padding:12px 16px}
+  .left{flex:1 1 360px;min-width:280px}
+  .right{flex:2 1 500px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+  .list{max-height:70vh;overflow:auto}
+  .item{padding:10px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center}
+  .item:last-child{border-bottom:none}
+  .badge{font-size:11px;color:#cbd5e1;background:#0d1320;border:1px solid #2a3042;padding:2px 8px;border-radius:999px}
+  .title{font-weight:600}
+  .muted{color:var(--muted);font-size:12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+  .small{font-size:12px}
+  a{color:#9cd1ff;text-decoration:none}
+  .footer{padding:12px 16px;color:#93a1b1;font-size:12px;border-top:1px solid var(--line)}
+  .hidden{display:none}
+  /* Mobile tweaks */
+  @media (max-width: 900px){
+    .wrap{flex-direction:column}
+    .left,.right{min-width:unset}
+    .list{max-height:50vh}
+    input.in{min-width:160px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Xtream Browser (Private)</h1>
+  <div class="row">
+    <input id="server" class="in" placeholder="Server (e.g., https://huba541.xyz)" inputmode="url" />
+    <input id="user" class="in" placeholder="Username" autocomplete="username" />
+    <input id="pass" class="in" placeholder="Password" type="password" autocomplete="current-password" />
+    <label class="muted"><input type="checkbox" id="remember" /> Remember on this device</label>
+    <button id="connect" class="btn">Connect</button>
+    <span id="status" class="muted"></span>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <span class="muted">Tip: Use <b>HTTPS</b> in the server field on iPad (e.g., https://huba541.xyz) to avoid mixed‑content blocks.</span>
+  </div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="live">Live</div>
+  <div class="tab" data-tab="movies">Movies</div>
+  <div class="tab" data-tab="series">Series</div>
+</div>
+
+<div class="wrap">
+  <div class="left">
+    <div class="card">
+      <div class="controls">
+        <input id="q" class="in" placeholder="Search name, group, ID…" style="flex:1 1 auto;min-width:180px" />
+        <select id="group" class="in">
+          <option value="">All groups</option>
+        </select>
+        <button id="exportM3U" class="btn">Export as M3U</button>
+      </div>
+      <div id="list" class="list"></div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="card">
+      <div id="details" class="muted">Enter your server & credentials above, tap Connect, then select an item to see playable links.</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  Runs entirely in your browser. If “Remember” is checked, credentials are saved to <i>this device</i> via localStorage and never uploaded anywhere else.
+</div>
+
+<script>
+(function(){
+  const $ = s => document.querySelector(s);
+  const $$ = s => Array.from(document.querySelectorAll(s));
+
+  let currentTab = 'live';
+  let data = { live: [], movies: [], series: [] };
+  let filtered = [];
+  let currentGroups = new Set();
+
+  // Local persistence
+  const saved = JSON.parse(localStorage.getItem('xtream_priv_cfg')||'{}');
+  if(saved.server) $('#server').value = saved.server;
+  if(saved.user) $('#user').value = saved.user;
+  if(saved.pass) $('#pass').value = saved.pass;
+  if(saved.remember) $('#remember').checked = true;
+
+  function setStatus(t){ $('#status').textContent = t||''; }
+
+  function ensureProtocol(u){
+    u = (u||'').trim();
+    if(!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    return u.replace(/\/+$/,'');
+  }
+
+  function apiUrl(params){
+    const base = ensureProtocol($('#server').value);
+    const u = new URL(base + '/player_api.php');
+    u.searchParams.set('username', $('#user').value.trim());
+    u.searchParams.set('password', $('#pass').value.trim());
+    Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v));
+    return u.toString();
+  }
+
+  function directUrl(kind, id, ext){
+    const base = ensureProtocol($('#server').value);
+    const u = new URL(base + '/' + kind + '/' + $('#user').value.trim() + '/' + $('#pass').value.trim() + '/' + id + (ext||''));
+    return u.toString();
+  }
+
+  async function fetchJSON(url){
+    const r = await fetch(url);
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  }
+
+  async function connect(){
+    // save or clear
+    if($('#remember').checked){
+      localStorage.setItem('xtream_priv_cfg', JSON.stringify({
+        server: $('#server').value.trim(),
+        user: $('#user').value.trim(),
+        pass: $('#pass').value,
+        remember: true
+      }));
+    }else{
+      localStorage.removeItem('xtream_priv_cfg');
+    }
+
+    setStatus('Connecting…');
+    try{
+      const info = await fetchJSON(apiUrl({}));
+      if(!(info && info.user_info && info.user_info.status === 'Active')){
+        setStatus('Warning: account did not report Active.');
+      }else{
+        setStatus('Connected. Loading lists…');
+      }
+    }catch(e){
+      setStatus('Could not connect: ' + e.message + '. Make sure your server URL is correct and uses HTTPS on iPad.');
+      return;
+    }
+
+    try{
+      data.live = await fetchJSON(apiUrl({action:'get_live_streams'})) || [];
+      data.movies = await fetchJSON(apiUrl({action:'get_vod_streams'})) || [];
+      data.series = await fetchJSON(apiUrl({action:'get_series'})) || [];
+    }catch(e){
+      setStatus('Loaded with errors: ' + e.message);
+    }
+    setStatus('Ready.');
+    switchTab(currentTab);
+  }
+
+  function renderGroups(){
+    const sel = $('#group');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">All groups</option>';
+    [...currentGroups].sort((a,b)=>(a||'').localeCompare(b||'')).forEach(g=>{
+      const opt = document.createElement('option');
+      opt.value = g || '';
+      opt.textContent = g || '(no group)';
+      sel.appendChild(opt);
+    });
+    if([...sel.options].some(o=>o.value===prev)) sel.value = prev;
+  }
+
+  function renderList(){
+    const list = $('#list');
+    const q = $('#q').value.toLowerCase();
+    const g = $('#group').value;
+    const arr = (data[currentTab] || []).filter(it=>{
+      const text = ((it.name||it.title||'') + ' ' + (it.category_name||it.genre||'') + ' ' + (it.stream_id||it.series_id||it.id||'')).toLowerCase();
+      const qok = !q || text.includes(q);
+      const gok = !g || (it.category_name||'') === g;
+      return qok && gok;
+    });
+    filtered = arr;
+
+    list.innerHTML = '';
+    if(arr.length===0){ list.innerHTML = '<div class="muted" style="padding:10px">No items.</div>'; return; }
+
+    const frag = document.createDocumentFragment();
+    arr.forEach(it=>{
+      const div = document.createElement('div');
+      div.className = 'item';
+      const name = it.name || it.title || ('Series #' + (it.series_id||it.id));
+      const id = it.stream_id || it.series_id || it.id;
+      div.innerHTML = `
+        <span class="badge">${currentTab.toUpperCase()}</span>
+        <div style="min-width:0;flex:1 1 auto">
+          <div class="title">${name}</div>
+          <div class="muted small">ID: ${id} • ${it.category_name||it.genre||''}</div>
+        </div>
+        <button class="btn small" data-id="${id}">Links</button>
+      `;
+      div.addEventListener('click',()=>showDetails(it));
+      frag.appendChild(div);
+    });
+    list.appendChild(frag);
+  }
+
+  function showDetails(it){
+    const box = $('#details');
+    const tab = currentTab;
+    const name = it.name || it.title || ('Series #' + (it.series_id||it.id));
+    const id = it.stream_id || it.series_id || it.id;
+    let html = `<div class="title" style="font-size:16px;margin-bottom:6px">${name}</div>`;
+    html += `<div class="muted small" style="margin-bottom:8px">Category: ${it.category_name||it.genre||'—'} • ID: ${id}</div>`;
+
+    if(tab==='live'){
+      const ts = directUrl('live', id, '.ts');
+      const m3u8 = directUrl('live', id, '.m3u8');
+      html += blocks([
+        {label:'Open .m3u8 (HLS, best for iPad)', href:m3u8},
+        {label:'Open .ts (MPEG-TS)', href:ts},
+        {label:'Copy .m3u8', copy:m3u8},
+        {label:'Copy .ts', copy:ts},
+      ]);
+    }else if(tab==='movies'){
+      const mp4 = directUrl('movie', id, '.mp4');
+      const mkv = directUrl('movie', id, '.mkv');
+      html += blocks([
+        {label:'Open .mp4', href:mp4},
+        {label:'Open .mkv (fallback)', href:mkv},
+        {label:'Copy .mp4', copy:mp4},
+      ]);
+    }else if(tab==='series'){
+      loadSeries(it.series_id || it.id, name);
+      return;
+    }
+    box.innerHTML = html;
+    bindCopy();
+  }
+
+  async function loadSeries(seriesId, seriesName){
+    const box = $('#details');
+    box.innerHTML = `<div class="title" style="font-size:16px;margin-bottom:6px">${seriesName}</div><div class="muted small">Loading episodes…</div>`;
+    try{
+      const info = await fetchJSON(apiUrl({action:'get_series_info', series_id: seriesId}));
+      let html = `<div class="title" style="font-size:16px;margin-bottom:6px">${seriesName}</div>`;
+      if(info && info.episodes){
+        Object.keys(info.episodes).sort((a,b)=>Number(a)-Number(b)).forEach(season=>{
+          html += `<div style="margin:8px 0"><span class="badge">Season ${season}</span></div>`;
+          html += `<div class="grid">` + info.episodes[season].map(ep=>{
+            const mp4 = directUrl('series', ep.id, '.mp4');
+            return `<div class="card" style="padding:10px">
+                      <div class="title small">E${ep.episode_num||''} — ${ep.title||'Episode'}</div>
+                      <div class="controls" style="margin-top:6px">
+                        <a class="btn small" target="_blank" rel="noopener" href="${mp4}">Open</a>
+                        <button class="btn small" data-copy="${mp4}">Copy</button>
+                      </div>
+                    </div>`;
+          }).join('') + `</div>`;
+        });
+      }else{
+        html += `<div class="muted small">No episodes found.</div>`;
+      }
+      box.innerHTML = html;
+      bindCopy();
+    }catch(e){
+      box.innerHTML = `<div class="muted small">Failed to load episodes: ${e.message}</div>`;
+    }
+  }
+
+  function blocks(arr){
+    return `<div class="grid">` + arr.map(x=> x.href
+      ? `<a class="btn small" target="_blank" rel="noopener" href="${x.href}">${x.label}</a>`
+      : `<button class="btn small" data-copy="${x.copy}">${x.label}</button>`
+    ).join('') + `</div>`;
+  }
+
+  function bindCopy(){
+    $$('#details [data-copy]').forEach(b=>b.addEventListener('click',()=>{
+      const text = b.getAttribute('data-copy');
+      navigator.clipboard.writeText(text).then(()=>{
+        setStatus('Copied link to clipboard');
+        setTimeout(()=>setStatus(''),1200);
+      });
+    }));
+  }
+
+  function switchTab(tab){
+    currentTab = tab;
+    $$('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab === tab));
+    currentGroups = new Set((data[tab]||[]).map(it=>it.category_name||''));
+    renderGroups();
+    renderList();
+    $('#details').innerHTML = '<div class="muted">Select an item to see links.</div>';
+  }
+
+  function exportM3U(){
+    const lines = ['#EXTM3U'];
+    filtered.forEach(it=>{
+      const name = it.name || it.title || ('Series #' + (it.series_id||it.id));
+      const group = it.category_name || it.genre || '';
+      let url = '';
+      if(currentTab==='live'){
+        url = directUrl('live', it.stream_id || it.id, '.m3u8');
+      }else if(currentTab==='movies'){
+        url = directUrl('movie', it.stream_id || it.id, '.mp4');
+      }else{
+        return;
+      }
+      lines.push(`#EXTINF:-1 group-title="${(group||'').replace(/"/g,'')}",${name}`);
+      lines.push(url);
+    });
+    const blob = new Blob([lines.join('\n')], {type:'audio/x-mpegurl'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `xtream_${currentTab}.m3u`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // Bind
+  $('#connect').addEventListener('click', connect);
+  $('#q').addEventListener('input', renderList);
+  $('#group').addEventListener('change', renderList);
+  $('#exportM3U').addEventListener('click', exportM3U);
+  $$('.tab').forEach(t=>t.addEventListener('click', ()=>switchTab(t.dataset.tab)));
+})();
+</script>
+</body>
+</html>
